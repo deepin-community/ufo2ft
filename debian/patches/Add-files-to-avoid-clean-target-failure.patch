@@ -1,0 +1,33 @@
+From: Hideki Yamane <henrich@debian.org>
+Date: Fri, 12 Feb 2021 14:40:37 +0900
+Subject: Add files to avoid clean target failure
+
+---
+ .eggs/README.txt                              |  6 ++++++
+ .pybuild/cpython3_3.9_ufo2ft/.pydistutils.cfg | 10 ++++++++++
+ 2 files changed, 16 insertions(+)
+ create mode 100644 .eggs/README.txt
+ create mode 100644 .pybuild/cpython3_3.9_ufo2ft/.pydistutils.cfg
+
+--- /dev/null
++++ b/.eggs/README.txt
+@@ -0,0 +1,6 @@
++This directory contains eggs that were downloaded by setuptools to build, test, and run plug-ins.
++
++This directory caches those eggs to prevent repeated downloads.
++
++However, it is safe to delete this directory.
++
+--- /dev/null
++++ b/.pybuild/cpython3_3.9_ufo2ft/.pydistutils.cfg
+@@ -0,0 +1,10 @@
++[clean]
++all=1
++[build]
++build-lib=/home/henrich/src/pkg-fonts/build-area/ufo2ft-2.19.2/.pybuild/cpython3_3.9_ufo2ft/build
++[install]
++force=1
++install-layout=deb
++install-scripts=$base/bin
++install-lib=/usr/lib/python3.9/dist-packages
++prefix=/usr

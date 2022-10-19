@@ -1,0 +1,35 @@
+Source: ufo2ft
+Section: fonts
+Priority: optional
+Maintainer: Debian Fonts Task Force <debian-fonts@lists.debian.org>
+Uploaders:
+ Jeremy Bicha <jbicha@debian.org>,
+ Yao Wei (魏銘廷) <mwei@debian.org>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               python3-all,
+               python3-setuptools,
+               python3-setuptools-scm,
+               python3-pytest <!nocheck>,
+               python3-fonttools (>= 4.26.1),
+               python3-ufolib2 (>= 0.7.1),
+               python3-defcon (>= 0.8.1),
+               python3-compreffor (>= 0.5.1),
+               python3-booleanoperations (>= 0.9.0),
+               python3-cffsubr (>= 0.2.8),
+Standards-Version: 4.6.0
+Homepage: https://github.com/googlei18n/ufo2ft/releases
+Vcs-Git: https://salsa.debian.org/fonts-team/ufo2ft.git
+Vcs-Browser: https://salsa.debian.org/fonts-team/ufo2ft
+Testsuite: autopkgtest-pkg-python
+
+Package: python3-ufo2ft
+Architecture: all
+Multi-Arch: foreign
+Section: python
+Depends: ${misc:Depends},
+         ${python3:Depends},
+Description: Bridge from UFOs to fonttools objects
+ python3-ufo2ft converts fonts from UFO, a common font source format, to
+ fonttools Python objects, which can subsequently saved as OTF or TTF
+ binaries.

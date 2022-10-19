@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+
+export PYBUILD_NAME=ufo2ft
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+override_dh_auto_clean:
+	-dh_auto_clean
+	-rm Lib/ufo2ft/_version.py
+
+override_dh_auto_test:
+ifeq ($(filter nocheck,$(DEB_BUILD_PROFILES)),)
+	dh_auto_test
+endif

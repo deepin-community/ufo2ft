@@ -1,0 +1,177 @@
+ufo2ft (2.24.0-1) unstable; urgency=medium
+
+  * New upstream version 2.24.0
+  * debian/watch: Change GitHub archive URL
+  * debian/control:
+    - Update Build-Depends
+    - Bump Standards-Version
+  * debian/patches: Refresh patches
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Sun, 29 Aug 2021 15:19:33 +0800
+
+ufo2ft (2.19.2-1) unstable; urgency=medium
+
+  * Team upload
+
+  * New upstream version 2.19.2
+  * debian/rules
+    - Ignore errors in clean target
+  * debian/patches
+    - Refresh patches
+    - Add Add-files-to-avoid-clean-target-failure.patch
+
+ -- Hideki Yamane <henrich@debian.org>  Fri, 12 Feb 2021 14:45:33 +0900
+
+ufo2ft (2.19.1-2) unstable; urgency=medium
+
+  * Team upload
+
+  * debian/control
+    - Set Build-Depends: python3-fonttools (>= 4.19.1) and drop python3-cu2qu
+  * debian/patches
+    - Add cu2qu_moved_to_fonttools.patch for above change
+
+ -- Hideki Yamane <henrich@debian.org>  Thu, 11 Feb 2021 14:49:37 +0900
+
+ufo2ft (2.19.1-1) unstable; urgency=medium
+
+  * New upstream version 2.19.1
+  * debian/control: Use debhelper 13
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Sun, 13 Dec 2020 22:35:56 +0800
+
+ufo2ft (2.18.1-1) unstable; urgency=medium
+
+  * New upstream version 2.18.1
+  * debian/control:
+    - Bump Standards-Version to 4.5.1.  No changes needed.
+    - Update dependencies.
+  * d/patches: Remove upstreamed patch
+  * Fixes tests about COLR/CPAL support (Closes: #975829)
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Thu, 26 Nov 2020 21:42:53 +0800
+
+ufo2ft (2.16.0-1) unstable; urgency=medium
+
+  * New upstream version 2.16.0
+  * debian/watch: Add upstream version mangle for alpha/beta versions
+  * debian/control: Add dependency to python3-cffsubr
+  * d/patches/fix-TransformationsFilterTest-test-error.patch:
+    Patch out error message in the test case
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Sun, 25 Oct 2020 22:44:51 +0800
+
+ufo2ft (2.14.1-1) unstable; urgency=medium
+
+  * New upstream version 2.14.1
+  * Update dependencies
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Fri, 29 May 2020 22:40:33 +0800
+
+ufo2ft (2.12.2-1) unstable; urgency=medium
+
+  * New upstream version 2.12.2
+  * d/control: Update dependencies
+  * d/control: Bump Standards-Version to 4.5.0
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Mon, 02 Mar 2020 00:44:41 +0800
+
+ufo2ft (2.11.1-1) unstable; urgency=medium
+
+  * New upstream version 2.11.1
+  * debian/copyright: Add copyright information to the new test files
+  * debian/control: Update dependencies
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Sun, 22 Dec 2019 23:12:26 +0100
+
+ufo2ft (2.10.0-2) unstable; urgency=medium
+
+  * debian/salsa-ci.yml: Add CI script for salsa.debian.org
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Sun, 01 Dec 2019 17:23:03 +0800
+
+ufo2ft (2.10.0-1) unstable; urgency=medium
+
+  * New upstream version 2.10.0
+  * debian/control:
+    - Update dependencies
+    - Bump Standards-Version to 4.4.1
+  * debian/patches: Remove patches
+  * Bump debhelper compat to 12
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Sun, 01 Dec 2019 13:04:39 +0800
+
+ufo2ft (2.9.1-1) unstable; urgency=medium
+
+  * New upstream version 2.9.1
+  * debian/control:
+    - Update dependencies
+    - Bump Standards-Version to 4.4.0
+  * debian/patches:
+    - Update patch that disable skia-pathops related tests
+    - Fix Variable Width test error related to newer fonttools
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Thu, 18 Jul 2019 10:56:12 -0300
+
+ufo2ft (2.6.0-1) unstable; urgency=medium
+
+  [ Yao Wei (魏銘廷) ]
+  * New upstream version 2.6.0
+  * debian/control:
+    * Update dependencies
+    * Bump Standards-Version to 4.3.0
+
+  [ Jeremy Bicha ]
+  * Remove nocheck qualifier from most Build-Depends
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Wed, 09 Jan 2019 12:35:23 +0100
+
+ufo2ft (2.5.0-2) unstable; urgency=medium
+
+  * Use automatic dependencies
+
+ -- Jeremy Bicha <jbicha@debian.org>  Sat, 15 Dec 2018 08:20:08 -0500
+
+ufo2ft (2.5.0-1) unstable; urgency=medium
+
+  [Jelmer Vernooĳ]
+  * Use secure copyright file specification URI.
+
+  [Yao Wei (魏銘廷)]
+  * New upstream version 2.5.0
+  * debian/control:
+    - Update dependencies
+    - Bump policy version to 4.2.1
+    - Update maintainer address
+
+ -- Yao Wei (魏銘廷) <mwei@debian.org>  Wed, 31 Oct 2018 22:47:25 +0800
+
+ufo2ft (2.1.0-1) unstable; urgency=medium
+
+  * New upstream version 2.1.0 (Closes: #908538)
+  * debian/control:
+    - Update dependencies
+    - Bump policy version to 4.1.5
+    - Update mailing list address
+    - Change debian helper compat to 11
+  * debian/rules:
+    - Add nocheck to skip tests
+
+ -- Yao Wei (魏銘廷) <mwei@lxde.org>  Tue, 11 Sep 2018 13:20:08 +0800
+
+ufo2ft (1.1.0-1) unstable; urgency=medium
+
+  * Team upload.
+  * New upstream version 1.1.0.
+  * debian/control:
+    - Update dependencies.
+    - Change Vcs fields to salsa.debian.org.
+    - Bump policy version to 4.1.3.
+
+ -- Yao Wei (魏銘廷) <mwei@lxde.org>  Wed, 17 Jan 2018 23:37:10 +0800
+
+ufo2ft (0.6.2-1) unstable; urgency=medium
+
+  * Initial release. Closes: #868006
+
+ -- Jeremy Bicha <jbicha@debian.org>  Sat, 18 Nov 2017 21:16:30 -0500

@@ -1,0 +1,4 @@
+version=4
+opts="uversionmangle=s/\.(\d+)([a-z]\d+)/\.\1\~\2/" \
+https://github.com/googlei18n/ufo2ft/releases \
+	.*/archive/refs/tags/v@ANY_VERSION@@ARCHIVE_EXT@

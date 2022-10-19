@@ -1,0 +1,49 @@
+From: =?utf-8?b?IllhbyBXZWkgKOmtj+mKmOW7tyki?= <mwei@debian.org>
+Date: Sun, 30 Jun 2019 14:20:16 +0800
+Subject: disable pathops test
+
+Origin: vendor
+Forwarded: not-needed
+
+This will disable tests that requires skia-pathops, since skia is not in
+Debian yet.
+---
+ tests/integration_test.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/tests/integration_test.py
++++ b/tests/integration_test.py
+@@ -109,6 +109,7 @@
+         otf = compileOTF(testufo, removeOverlaps=True)
+         expectTTX(otf, "TestFont-NoOverlaps-CFF.ttx")
+ 
++    @pytest.mark.skip(reason="skia-pathops is unavailable in debian yet")
+     def test_removeOverlaps_CFF_pathops(self, testufo):
+         otf = compileOTF(testufo, removeOverlaps=True, overlapsBackend="pathops")
+         expectTTX(otf, "TestFont-NoOverlaps-CFF-pathops.ttx")
+@@ -117,6 +118,7 @@
+         ttf = compileTTF(testufo, removeOverlaps=True)
+         expectTTX(ttf, "TestFont-NoOverlaps-TTF.ttx")
+ 
++    @pytest.mark.skip(reason="skia-pathops is unavailable in debian yet")
+     def test_removeOverlaps_pathops(self, testufo):
+         ttf = compileTTF(testufo, removeOverlaps=True, overlapsBackend="pathops")
+         expectTTX(ttf, "TestFont-NoOverlaps-TTF-pathops.ttx")
+--- a/tests/preProcessor_test.py
++++ b/tests/preProcessor_test.py
+@@ -91,6 +91,7 @@
+         assert (glyphSets0["a"][0][0].x - glyphSets1["a"][0][0].x) == -40
+         assert (glyphSets1["a"][0][0].y - glyphSets0["a"][0][0].y) == 10
+ 
++    @pytest.mark.skip(reason="skia-pathops is unavailable in debian yet")
+     def test_custom_filters_as_argument(self, FontClass):
+         from ufo2ft.filters import RemoveOverlapsFilter, TransformationsFilter
+ 
+@@ -181,6 +182,7 @@
+         assert (glyphSets[0]["a"][0][0].x - glyphSets[1]["a"][0][0].x) == -40
+         assert (glyphSets[1]["a"][0][0].y - glyphSets[0]["a"][0][0].y) == 10
+ 
++    @pytest.mark.skip(reason="skia-pathops is unavailable in debian yet")
+     def test_custom_filters_as_argument(self, FontClass):
+         ufo1 = FontClass(getpath("TestFont.ufo"))
+         ufo2 = FontClass(getpath("TestFont.ufo"))
