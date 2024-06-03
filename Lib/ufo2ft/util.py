@@ -2,9 +2,11 @@ import importlib
 import logging
 import re
 from copy import deepcopy
-from inspect import getfullargspec
+from inspect import currentframe, getfullargspec
+from typing import Set
 
 from fontTools import subset, ttLib, unicodedata
+from fontTools.designspaceLib import DesignSpaceDocument
 from fontTools.feaLib.builder import addOpenTypeFeatures
 from fontTools.misc.fixedTools import otRound
 from fontTools.misc.transform import Identity, Transform
@@ -101,16 +103,18 @@ def _getNewGlyphFactory(glyph):
     cls = glyph.__class__
     if "name" in getfullargspec(cls.__init__).args:
 
-        def newGlyph(name):
-            return cls(name=name)
+        def newGlyph(name, **kwargs):
+            return cls(name=name, **kwargs)
 
     else:
 
-        def newGlyph(name):
+        def newGlyph(name, **kwargs):
             # use instantiateGlyphObject() to keep any custom sub-element classes
             # https://github.com/googlefonts/ufo2ft/issues/363
             g2 = glyph.layer.instantiateGlyphObject()
             g2.name = name
+            for k, v in kwargs.items():
+                setattr(g2, k, v)
             return g2
 
     return newGlyph
@@ -137,6 +141,21 @@ def _copyGlyph(glyph, glyphFactory=None, reverseContour=False):
     glyph.drawPoints(pointPen)
 
     return copy
+
+
+def _setGlyphMargin(glyph, side, margin):
+    # defcon.Glyph has @property setters for the margins, whereas ufoLib2.Glyph
+    # has regular instance methods
+    assert side in {"left", "right", "top", "bottom"}
+    if hasattr(glyph, f"set{side.title()}Margin"):  # ufoLib2
+        getattr(glyph, f"set{side.title()}Margin")(margin)
+        assert getattr(glyph, f"get{side.title()}Margin")() == margin
+    elif hasattr(glyph, f"{side}Margin"):  # defcon
+        descriptor = getattr(type(glyph), f"{side}Margin")
+        descriptor.__set__(glyph, margin)
+        assert descriptor.__get__(glyph) == margin
+    else:
+        raise NotImplementedError(f"Unsupported Glyph class: {type(glyph)!r}")
 
 
 def deepCopyContours(
@@ -275,11 +294,14 @@ def classifyGlyphs(unicodeFunc, cmap, gsub=None):
     glyphSets = {}
     neutralGlyphs = set()
     for uv, glyphName in cmap.items():
-        key = unicodeFunc(uv)
-        if key is None:
+        key_or_keys = unicodeFunc(uv)
+        if key_or_keys is None:
             neutralGlyphs.add(glyphName)
+        elif isinstance(key_or_keys, (list, set)):
+            for key in key_or_keys:
+                glyphSets.setdefault(key, set()).add(glyphName)
         else:
-            glyphSets.setdefault(key, set()).add(glyphName)
+            glyphSets.setdefault(key_or_keys, set()).add(glyphName)
 
     if gsub is not None:
         if neutralGlyphs:
@@ -303,6 +325,18 @@ def unicodeInScripts(uv, scripts):
     if "Zyyy" in sx:
         return None
     return not sx.isdisjoint(scripts)
+
+
+# we consider the 'Common' and 'Inherited' scripts as neutral for
+# determining a script horizontal direction
+DFLT_SCRIPTS = {"Zyyy", "Zinh"}
+
+
+def unicodeScriptDirection(uv):
+    sc = unicodedata.script(chr(uv))
+    if sc in DFLT_SCRIPTS:
+        return None
+    return unicodedata.script_horizontal_direction(sc)
 
 
 def calcCodePageRanges(unicodes):
@@ -478,8 +512,8 @@ def _loadPluginFromString(spec, moduleName, isValidFunc):
         raise TypeError(klass)
     try:
         options = _kwargsEval(kwargs) if kwargs else {}
-    except SyntaxError:
-        raise ValueError("options have incorrect format: %r" % kwargs)
+    except SyntaxError as e:
+        raise ValueError("options have incorrect format: %r" % kwargs) from e
 
     return klass(**options)
 
@@ -487,3 +521,77 @@ def _loadPluginFromString(spec, moduleName, isValidFunc):
 def quantize(number, factor):
     """Round to a multiple of the given parameter"""
     return factor * otRound(number / factor)
+
+
+def init_kwargs(kwargs, defaults):
+    """Initialise kwargs default values.
+
+    To be used as the first function in top-level `ufo2ft.compile*` functions.
+
+    Raise TypeError with unexpected keyword arguments (missing from 'defaults').
+    """
+    extra_kwargs = set(kwargs).difference(defaults)
+    if extra_kwargs:
+        # get the name of the function that called init_kwargs
+        func_name = currentframe().f_back.f_code.co_name
+        raise TypeError(
+            f"{func_name}() got unexpected keyword arguments: "
+            f"{', '.join(repr(k) for k in extra_kwargs)}"
+        )
+    return {k: (kwargs[k] if k in kwargs else v) for k, v in defaults.items()}
+
+
+def prune_unknown_kwargs(kwargs, *callables):
+    """Inspect callables and return a new dict skipping any unknown arguments.
+
+    To be used after `init_kwargs` to narrow down arguments for underlying code.
+    """
+    known_args = set()
+    for func in callables:
+        known_args.update(getfullargspec(func).args)
+    return {k: v for k, v in kwargs.items() if k in known_args}
+
+
+def ensure_all_sources_have_names(doc: DesignSpaceDocument) -> None:
+    """Change in-place the given document to make sure that all <source> elements
+    have a unique name assigned.
+
+    This may rename sources with a "temp_master.N" name, designspaceLib's default
+    stand-in.
+    """
+    used_names: Set[str] = set()
+    counter = 0
+    for source in doc.sources:
+        while source.name is None or source.name in used_names:
+            source.name = f"temp_master.{counter}"
+            counter += 1
+        used_names.add(source.name)
+
+
+def getMaxComponentDepth(glyph, glyphSet, maxComponentDepth=0):
+    """Return the height of a composite glyph's tree of components.
+
+    This is equal to the depth of its deepest node, where the depth
+    means the number of edges (component references) from the node
+    to the tree's root.
+
+    For glyphs that contain no components, only contours, this is 0.
+    Composite glyphs have max component depth of 1 or greater.
+    """
+    if not glyph.components:
+        return maxComponentDepth
+
+    maxComponentDepth += 1
+
+    initialMaxComponentDepth = maxComponentDepth
+    for component in glyph.components:
+        try:
+            baseGlyph = glyphSet[component.baseGlyph]
+        except KeyError:
+            continue
+        componentDepth = getMaxComponentDepth(
+            baseGlyph, glyphSet, initialMaxComponentDepth
+        )
+        maxComponentDepth = max(maxComponentDepth, componentDepth)
+
+    return maxComponentDepth

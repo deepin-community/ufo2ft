@@ -6,12 +6,14 @@ Subject: cu2qu_moved_to_fonttools
 ---
  Lib/ufo2ft/filters/cubicToQuadratic.py | 4 ++--
  Lib/ufo2ft/preProcessor.py             | 4 ++--
- requirements.txt                       | 3 +--
- setup.py                               | 3 +--
+ requirements.txt                       | 1 -
+ setup.py                               | 1 -
  tests/outlineCompiler_test.py          | 2 +-
  tests/preProcessor_test.py             | 2 +-
- 6 files changed, 8 insertions(+), 10 deletions(-)
+ 6 files changed, 6 insertions(+), 8 deletions(-)
 
+diff --git a/Lib/ufo2ft/filters/cubicToQuadratic.py b/Lib/ufo2ft/filters/cubicToQuadratic.py
+index 87d81b1..4b77144 100644
 --- a/Lib/ufo2ft/filters/cubicToQuadratic.py
 +++ b/Lib/ufo2ft/filters/cubicToQuadratic.py
 @@ -1,7 +1,7 @@
@@ -24,9 +26,11 @@ Subject: cu2qu_moved_to_fonttools
  
  from ufo2ft.filters import BaseFilter
  from ufo2ft.fontInfoData import getAttrWithFallback
+diff --git a/Lib/ufo2ft/preProcessor.py b/Lib/ufo2ft/preProcessor.py
+index e239152..9463aea 100644
 --- a/Lib/ufo2ft/preProcessor.py
 +++ b/Lib/ufo2ft/preProcessor.py
-@@ -228,7 +228,7 @@
+@@ -267,7 +267,7 @@ class TTFInterpolatablePreProcessor:
          skipExportGlyphs=None,
          filters=None,
      ):
@@ -35,37 +39,43 @@ Subject: cu2qu_moved_to_fonttools
  
          self.ufos = ufos
          self.inplace = inplace
-@@ -267,7 +267,7 @@
-                 self.postFilters.append(post)
+@@ -304,7 +304,7 @@ class TTFInterpolatablePreProcessor:
+         self.postFilters = [[f for f in filters if not f.pre] for filters in filterses]
  
      def process(self):
 -        from cu2qu.ufo import fonts_to_quadratic
 +        from fontTools.cu2qu.ufo import fonts_to_quadratic
  
-         # first apply all custom pre-filters
-         for funcs, ufo, glyphSet in zip(self.preFilters, self.ufos, self.glyphSets):
+         needs_decomposition = set()
+ 
+diff --git a/requirements.txt b/requirements.txt
+index e69fd79..7989503 100644
 --- a/requirements.txt
 +++ b/requirements.txt
 @@ -1,6 +1,5 @@
- fonttools[lxml,ufo]==4.26.1
- defcon==0.8.1
--cu2qu==1.6.7
- compreffor==0.5.1
+ fonttools[lxml,ufo]==4.38.0
+ defcon==0.10.0
+-cu2qu==1.6.7.post1
+ compreffor==0.5.1.post1
  booleanOperations==0.9.0
- cffsubr==0.2.8
+ cffsubr==0.2.9.post1
+diff --git a/setup.py b/setup.py
+index e21e1a3..1c854e8 100644
 --- a/setup.py
 +++ b/setup.py
-@@ -30,7 +30,6 @@
+@@ -30,7 +30,6 @@ setup(
      tests_require=["pytest>=2.8"],
      install_requires=[
-         "fonttools[ufo]>=4.26.1",
+         "fonttools[ufo]>=4.38.0",
 -        "cu2qu>=1.6.7",
          "cffsubr>=0.2.8",
          "booleanOperations>=0.9.0",
      ],
+diff --git a/tests/outlineCompiler_test.py b/tests/outlineCompiler_test.py
+index b31319c..ee51920 100644
 --- a/tests/outlineCompiler_test.py
 +++ b/tests/outlineCompiler_test.py
-@@ -2,7 +2,7 @@
+@@ -2,7 +2,7 @@ import logging
  import os
  
  import pytest
@@ -74,9 +84,11 @@ Subject: cu2qu_moved_to_fonttools
  from fontTools.ttLib import TTFont
  from fontTools.ttLib.tables._g_l_y_f import USE_MY_METRICS
  
+diff --git a/tests/preProcessor_test.py b/tests/preProcessor_test.py
+index 6cbf018..3935394 100644
 --- a/tests/preProcessor_test.py
 +++ b/tests/preProcessor_test.py
-@@ -2,7 +2,7 @@
+@@ -2,7 +2,7 @@ import logging
  import os
  
  import pytest

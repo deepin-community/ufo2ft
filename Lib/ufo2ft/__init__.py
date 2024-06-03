@@ -1,10 +1,15 @@
 import logging
+import os
 from enum import IntEnum
-from typing import Any, Optional
 
 from fontTools import varLib
+from fontTools.designspaceLib import DesignSpaceDocument
+from fontTools.designspaceLib.split import splitInterpolable, splitVariableFonts
+from fontTools.misc.loggingTools import Timer
+from fontTools.otlLib.optimize.gpos import GPOS_COMPACT_MODE_ENV_KEY
 
 from ufo2ft.constants import SPARSE_OTF_MASTER_TABLES, SPARSE_TTF_MASTER_TABLES
+from ufo2ft.errors import InvalidDesignSpaceData
 from ufo2ft.featureCompiler import (
     MTI_FEATURES_PREFIX,
     FeatureCompiler,
@@ -17,7 +22,12 @@ from ufo2ft.preProcessor import (
     TTFInterpolatablePreProcessor,
     TTFPreProcessor,
 )
-from ufo2ft.util import _getDefaultNotdefGlyph, getDefaultMasterFont
+from ufo2ft.util import (
+    _getDefaultNotdefGlyph,
+    ensure_all_sources_have_names,
+    init_kwargs,
+    prune_unknown_kwargs,
+)
 
 try:
     from ._version import version as __version__
@@ -26,6 +36,7 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+timer = Timer(logging.getLogger("ufo2ft.timer"), level=logging.DEBUG)
 
 
 class CFFOptimization(IntEnum):
@@ -34,29 +45,83 @@ class CFFOptimization(IntEnum):
     SUBROUTINIZE = 2
 
 
-def compileOTF(
-    ufo,
-    preProcessorClass=OTFPreProcessor,
-    outlineCompilerClass=OutlineOTFCompiler,
+@timer("preprocess UFO")
+def call_preprocessor(ufo_or_ufos, *, preProcessorClass, **kwargs):
+    logger.info("Pre-processing glyphs")
+    if kwargs["skipExportGlyphs"] is None:
+        if isinstance(ufo_or_ufos, (list, tuple)):
+            kwargs["skipExportGlyphs"] = set()
+            for ufo in ufo_or_ufos:
+                kwargs["skipExportGlyphs"].update(
+                    ufo.lib.get("public.skipExportGlyphs", [])
+                )
+        else:
+            kwargs["skipExportGlyphs"] = ufo_or_ufos.lib.get(
+                "public.skipExportGlyphs", []
+            )
+
+    # Preprocessors expect this parameter under a different name.
+    if "cubicConversionError" in kwargs:
+        kwargs["conversionError"] = kwargs.pop("cubicConversionError")
+
+    callables = [preProcessorClass]
+    if hasattr(preProcessorClass, "initDefaultFilters"):
+        callables.append(preProcessorClass.initDefaultFilters)
+    preProcessor = preProcessorClass(
+        ufo_or_ufos, **prune_unknown_kwargs(kwargs, *callables)
+    )
+    return preProcessor.process()
+
+
+@timer("compile a basic TTF")
+def call_outline_compiler(ufo, glyphSet, *, outlineCompilerClass, **kwargs):
+    kwargs = prune_unknown_kwargs(kwargs, outlineCompilerClass)
+    outlineCompiler = outlineCompilerClass(ufo, glyphSet=glyphSet, **kwargs)
+    return outlineCompiler.compile()
+
+
+def call_postprocessor(otf, ufo, glyphSet, *, postProcessorClass, **kwargs):
+    with timer("postprocess TTF"):
+        if postProcessorClass is not None:
+            postProcessor = postProcessorClass(otf, ufo, glyphSet=glyphSet)
+            kwargs = prune_unknown_kwargs(kwargs, postProcessor.process)
+            otf = postProcessor.process(**kwargs)
+    return otf
+
+
+base_args = dict(
+    postProcessorClass=PostProcessor,
     featureCompilerClass=None,
     featureWriters=None,
     filters=None,
     glyphOrder=None,
     useProductionNames=None,
-    optimizeCFF=CFFOptimization.SUBROUTINIZE,
-    roundTolerance=None,
     removeOverlaps=False,
     overlapsBackend=None,
     inplace=False,
     layerName=None,
     skipExportGlyphs=None,
     debugFeatureFile=None,
-    cffVersion=1,
-    subroutinizer=None,
     notdefGlyph=None,
-    postProcessorClass: Optional[Any] = PostProcessor,
-    _tables=None,
-):
+    colrLayerReuse=True,
+    feaIncludeDir=None,
+)
+
+compileOTF_args = {
+    **base_args,
+    **dict(
+        preProcessorClass=OTFPreProcessor,
+        outlineCompilerClass=OutlineOTFCompiler,
+        optimizeCFF=CFFOptimization.SUBROUTINIZE,
+        roundTolerance=None,
+        cffVersion=1,
+        subroutinizer=None,
+        _tables=None,
+    ),
+}
+
+
+def compileOTF(ufo, **kwargs):
     """Create FontTools CFF font from a UFO.
 
     *removeOverlaps* performs a union operation on all the glyphs' contours.
@@ -115,81 +180,48 @@ def compileOTF(
       NOTE: cffsubr is required for subroutinizing CFF2 tables, as compreffor
       currently doesn't support it.
     """
-    logger.info("Pre-processing glyphs")
-
-    if skipExportGlyphs is None:
-        skipExportGlyphs = ufo.lib.get("public.skipExportGlyphs", [])
-
-    preProcessor = preProcessorClass(
-        ufo,
-        inplace=inplace,
-        removeOverlaps=removeOverlaps,
-        overlapsBackend=overlapsBackend,
-        layerName=layerName,
-        skipExportGlyphs=skipExportGlyphs,
-        filters=filters,
-    )
-    glyphSet = preProcessor.process()
+    kwargs = init_kwargs(kwargs, compileOTF_args)
+    glyphSet = call_preprocessor(ufo, **kwargs)
 
     logger.info("Building OpenType tables")
-    optimizeCFF = CFFOptimization(optimizeCFF)
-    outlineCompiler = outlineCompilerClass(
+    optimizeCFF = CFFOptimization(kwargs.pop("optimizeCFF"))
+    tables = kwargs.pop("_tables")
+    otf = call_outline_compiler(
         ufo,
-        glyphSet=glyphSet,
-        glyphOrder=glyphOrder,
-        notdefGlyph=notdefGlyph,
-        roundTolerance=roundTolerance,
+        glyphSet,
+        **kwargs,
         optimizeCFF=optimizeCFF >= CFFOptimization.SPECIALIZE,
-        tables=_tables,
+        tables=tables,
     )
-    otf = outlineCompiler.compile()
 
     # Only the default layer is likely to have all glyphs used in feature code.
-    if layerName is None:
-        compileFeatures(
-            ufo,
-            otf,
-            glyphSet=glyphSet,
-            featureWriters=featureWriters,
-            featureCompilerClass=featureCompilerClass,
-            debugFeatureFile=debugFeatureFile,
-        )
+    if kwargs["layerName"] is None:
+        compileFeatures(ufo, otf, glyphSet=glyphSet, **kwargs)
 
-    if postProcessorClass is not None:
-        postProcessor = postProcessorClass(otf, ufo, glyphSet=glyphSet)
-        otf = postProcessor.process(
-            useProductionNames,
-            optimizeCFF=optimizeCFF >= CFFOptimization.SUBROUTINIZE,
-            subroutinizer=subroutinizer,
-            cffVersion=cffVersion,
-        )
-
-    return otf
+    return call_postprocessor(
+        otf,
+        ufo,
+        glyphSet,
+        **kwargs,
+        optimizeCFF=optimizeCFF >= CFFOptimization.SUBROUTINIZE,
+    )
 
 
-def compileTTF(
-    ufo,
-    preProcessorClass=TTFPreProcessor,
-    outlineCompilerClass=OutlineTTFCompiler,
-    featureCompilerClass=None,
-    featureWriters=None,
-    filters=None,
-    glyphOrder=None,
-    useProductionNames=None,
-    convertCubics=True,
-    cubicConversionError=None,
-    reverseDirection=True,
-    rememberCurveType=True,
-    removeOverlaps=False,
-    overlapsBackend=None,
-    flattenComponents=False,
-    inplace=False,
-    layerName=None,
-    skipExportGlyphs=None,
-    debugFeatureFile=None,
-    notdefGlyph=None,
-    postProcessorClass: Optional[Any] = PostProcessor,
-):
+compileTTF_args = {
+    **base_args,
+    **dict(
+        preProcessorClass=TTFPreProcessor,
+        outlineCompilerClass=OutlineTTFCompiler,
+        convertCubics=True,
+        cubicConversionError=None,
+        reverseDirection=True,
+        rememberCurveType=True,
+        flattenComponents=False,
+    ),
+}
+
+
+def compileTTF(ufo, **kwargs):
     """Create FontTools TrueType font from a UFO.
 
     *removeOverlaps* performs a union operation on all the glyphs' contours.
@@ -210,70 +242,35 @@ def compileTTF(
     all glyphs are exported. UFO groups and kerning will be pruned of skipped
     glyphs.
     """
-    logger.info("Pre-processing glyphs")
+    kwargs = init_kwargs(kwargs, compileTTF_args)
 
-    if skipExportGlyphs is None:
-        skipExportGlyphs = ufo.lib.get("public.skipExportGlyphs", [])
-
-    preProcessor = preProcessorClass(
-        ufo,
-        inplace=inplace,
-        removeOverlaps=removeOverlaps,
-        overlapsBackend=overlapsBackend,
-        flattenComponents=flattenComponents,
-        convertCubics=convertCubics,
-        conversionError=cubicConversionError,
-        reverseDirection=reverseDirection,
-        rememberCurveType=rememberCurveType,
-        layerName=layerName,
-        skipExportGlyphs=skipExportGlyphs,
-        filters=filters,
-    )
-    glyphSet = preProcessor.process()
+    glyphSet = call_preprocessor(ufo, **kwargs)
 
     logger.info("Building OpenType tables")
-    outlineCompiler = outlineCompilerClass(
-        ufo, glyphSet=glyphSet, glyphOrder=glyphOrder, notdefGlyph=notdefGlyph
-    )
-    otf = outlineCompiler.compile()
+    otf = call_outline_compiler(ufo, glyphSet, **kwargs)
 
     # Only the default layer is likely to have all glyphs used in feature code.
-    if layerName is None:
-        compileFeatures(
-            ufo,
-            otf,
-            glyphSet=glyphSet,
-            featureWriters=featureWriters,
-            featureCompilerClass=featureCompilerClass,
-            debugFeatureFile=debugFeatureFile,
-        )
+    if kwargs["layerName"] is None:
+        compileFeatures(ufo, otf, glyphSet=glyphSet, **kwargs)
 
-    if postProcessorClass is not None:
-        postProcessor = postProcessorClass(otf, ufo, glyphSet=glyphSet)
-        otf = postProcessor.process(useProductionNames)
-
-    return otf
+    return call_postprocessor(otf, ufo, glyphSet, **kwargs)
 
 
-def compileInterpolatableTTFs(
-    ufos,
-    preProcessorClass=TTFInterpolatablePreProcessor,
-    outlineCompilerClass=OutlineTTFCompiler,
-    featureCompilerClass=None,
-    featureWriters=None,
-    glyphOrder=None,
-    useProductionNames=None,
-    cubicConversionError=None,
-    filters=None,
-    reverseDirection=True,
-    flattenComponents=False,
-    inplace=False,
-    layerNames=None,
-    skipExportGlyphs=None,
-    debugFeatureFile=None,
-    notdefGlyph=None,
-    postProcessorClass: Optional[Any] = PostProcessor,
-):
+compileInterpolatableTTFs_args = {
+    **base_args,
+    **dict(
+        preProcessorClass=TTFInterpolatablePreProcessor,
+        outlineCompilerClass=OutlineTTFCompiler,
+        cubicConversionError=None,
+        reverseDirection=True,
+        flattenComponents=False,
+        layerNames=None,
+        colrLayerReuse=False,
+    ),
+}
+
+
+def compileInterpolatableTTFs(ufos, **kwargs):
     """Create FontTools TrueType fonts from a list of UFOs with interpolatable
     outlines. Cubic curves are converted compatibly to quadratic curves using
     the Cu2Qu conversion algorithm.
@@ -297,61 +294,36 @@ def compileInterpolatableTTFs(
     """
     from ufo2ft.util import _LazyFontName
 
-    if layerNames is None:
-        layerNames = [None] * len(ufos)
-    assert len(ufos) == len(layerNames)
+    kwargs = init_kwargs(kwargs, compileInterpolatableTTFs_args)
 
-    if skipExportGlyphs is None:
-        skipExportGlyphs = set()
-        for ufo in ufos:
-            skipExportGlyphs.update(ufo.lib.get("public.skipExportGlyphs", []))
+    if kwargs["layerNames"] is None:
+        kwargs["layerNames"] = [None] * len(ufos)
+    assert len(ufos) == len(kwargs["layerNames"])
 
-    logger.info("Pre-processing glyphs")
-    preProcessor = preProcessorClass(
-        ufos,
-        inplace=inplace,
-        conversionError=cubicConversionError,
-        flattenComponents=flattenComponents,
-        reverseDirection=reverseDirection,
-        layerNames=layerNames,
-        skipExportGlyphs=skipExportGlyphs,
-        filters=filters,
-    )
-    glyphSets = preProcessor.process()
+    glyphSets = call_preprocessor(ufos, **kwargs)
 
-    for ufo, glyphSet, layerName in zip(ufos, glyphSets, layerNames):
+    for ufo, glyphSet, layerName in zip(ufos, glyphSets, kwargs["layerNames"]):
         fontName = _LazyFontName(ufo)
         if layerName is not None:
             logger.info("Building OpenType tables for %s-%s", fontName, layerName)
         else:
             logger.info("Building OpenType tables for %s", fontName)
 
-        outlineCompiler = outlineCompilerClass(
+        ttf = call_outline_compiler(
             ufo,
-            glyphSet=glyphSet,
-            glyphOrder=glyphOrder,
-            notdefGlyph=notdefGlyph,
+            glyphSet,
+            **kwargs,
             tables=SPARSE_TTF_MASTER_TABLES if layerName else None,
         )
-        ttf = outlineCompiler.compile()
 
         # Only the default layer is likely to have all glyphs used in feature
         # code.
         if layerName is None:
-            if debugFeatureFile:
-                debugFeatureFile.write("\n### %s ###\n" % fontName)
-            compileFeatures(
-                ufo,
-                ttf,
-                glyphSet=glyphSet,
-                featureWriters=featureWriters,
-                featureCompilerClass=featureCompilerClass,
-                debugFeatureFile=debugFeatureFile,
-            )
+            if kwargs["debugFeatureFile"]:
+                kwargs["debugFeatureFile"].write("\n### %s ###\n" % fontName)
+            compileFeatures(ufo, ttf, glyphSet=glyphSet, **kwargs)
 
-        if postProcessorClass is not None:
-            postProcessor = postProcessorClass(ttf, ufo, glyphSet=glyphSet)
-            ttf = postProcessor.process(useProductionNames)
+        ttf = call_postprocessor(ttf, ufo, glyphSet, **kwargs)
 
         if layerName is not None:
             # for sparse masters (i.e. containing only a subset of the glyphs), we
@@ -367,23 +339,7 @@ def compileInterpolatableTTFs(
         yield ttf
 
 
-def compileInterpolatableTTFsFromDS(
-    designSpaceDoc,
-    preProcessorClass=TTFInterpolatablePreProcessor,
-    outlineCompilerClass=OutlineTTFCompiler,
-    featureCompilerClass=None,
-    featureWriters=None,
-    glyphOrder=None,
-    useProductionNames=None,
-    cubicConversionError=None,
-    filters=None,
-    reverseDirection=True,
-    flattenComponents=False,
-    inplace=False,
-    debugFeatureFile=None,
-    notdefGlyph=None,
-    postProcessorClass: Optional[Any] = PostProcessor,
-):
+def compileInterpolatableTTFsFromDS(designSpaceDoc, **kwargs):
     """Create FontTools TrueType fonts from the DesignSpaceDocument UFO sources
     with interpolatable outlines. Cubic curves are converted compatibly to
     quadratic curves using the Cu2Qu conversion algorithm.
@@ -408,7 +364,8 @@ def compileInterpolatableTTFsFromDS(
     object will contain only a minimum set of tables ("head", "hmtx", "glyf", "loca",
     "maxp", "post" and "vmtx"), and no OpenType layout tables.
     """
-    ufos, layerNames = [], []
+    kwargs = init_kwargs(kwargs, compileInterpolatableTTFs_args)
+    ufos, kwargs["layerNames"] = [], []
     for source in designSpaceDoc.sources:
         if source.font is None:
             raise AttributeError(
@@ -417,58 +374,38 @@ def compileInterpolatableTTFsFromDS(
             )
         ufos.append(source.font)
         # 'layerName' is None for the default layer
-        layerNames.append(source.layerName)
+        kwargs["layerNames"].append(source.layerName)
 
-    skipExportGlyphs = designSpaceDoc.lib.get("public.skipExportGlyphs", [])
+    kwargs["skipExportGlyphs"] = designSpaceDoc.lib.get("public.skipExportGlyphs", [])
 
-    if notdefGlyph is None:
-        notdefGlyph = _getDefaultNotdefGlyph(designSpaceDoc)
+    if kwargs["notdefGlyph"] is None:
+        kwargs["notdefGlyph"] = _getDefaultNotdefGlyph(designSpaceDoc)
 
-    ttfs = compileInterpolatableTTFs(
-        ufos,
-        preProcessorClass=preProcessorClass,
-        outlineCompilerClass=outlineCompilerClass,
-        featureCompilerClass=featureCompilerClass,
-        featureWriters=featureWriters,
-        glyphOrder=glyphOrder,
-        useProductionNames=useProductionNames,
-        cubicConversionError=cubicConversionError,
-        filters=filters,
-        reverseDirection=reverseDirection,
-        flattenComponents=flattenComponents,
-        inplace=inplace,
-        layerNames=layerNames,
-        skipExportGlyphs=skipExportGlyphs,
-        debugFeatureFile=debugFeatureFile,
-        notdefGlyph=notdefGlyph,
-        postProcessorClass=postProcessorClass,
-    )
+    ttfs = compileInterpolatableTTFs(ufos, **kwargs)
 
-    if inplace:
+    if kwargs["inplace"]:
         result = designSpaceDoc
     else:
-        # TODO try a more efficient copy method that doesn't involve (de)serializing
-        result = designSpaceDoc.__class__.fromstring(designSpaceDoc.tostring())
+        result = designSpaceDoc.deepcopyExceptFonts()
     for source, ttf in zip(result.sources, ttfs):
         source.font = ttf
     return result
 
 
-def compileInterpolatableOTFsFromDS(
-    designSpaceDoc,
-    preProcessorClass=OTFPreProcessor,
-    outlineCompilerClass=OutlineOTFCompiler,
-    featureCompilerClass=None,
-    featureWriters=None,
-    filters=None,
-    glyphOrder=None,
-    useProductionNames=None,
-    roundTolerance=None,
-    inplace=False,
-    debugFeatureFile=None,
-    notdefGlyph=None,
-    postProcessorClass: Optional[Any] = PostProcessor,
-):
+compileInterpolatableOTFs_args = {
+    **base_args,
+    **dict(
+        preProcessorClass=OTFPreProcessor,
+        outlineCompilerClass=OutlineOTFCompiler,
+        featureCompilerClass=None,
+        roundTolerance=None,
+        optimizeCFF=CFFOptimization.NONE,
+        colrLayerReuse=False,
+    ),
+}
+
+
+def compileInterpolatableOTFsFromDS(designSpaceDoc, **kwargs):
     """Create FontTools CFF fonts from the DesignSpaceDocument UFO sources
     with interpolatable outlines.
 
@@ -495,6 +432,7 @@ def compileInterpolatableOTFsFromDS(
     object will contain only a minimum set of tables ("head", "hmtx", "CFF ", "maxp",
     "vmtx" and "VORG"), and no OpenType layout tables.
     """
+    kwargs = init_kwargs(kwargs, compileInterpolatableOTFs_args)
     for source in designSpaceDoc.sources:
         if source.font is None:
             raise AttributeError(
@@ -502,42 +440,33 @@ def compileInterpolatableOTFsFromDS(
                 % getattr(source, "name", "<Unknown>")
             )
 
-    skipExportGlyphs = designSpaceDoc.lib.get("public.skipExportGlyphs", [])
+    kwargs["skipExportGlyphs"] = designSpaceDoc.lib.get("public.skipExportGlyphs", [])
 
-    if notdefGlyph is None:
-        notdefGlyph = _getDefaultNotdefGlyph(designSpaceDoc)
+    if kwargs["notdefGlyph"] is None:
+        kwargs["notdefGlyph"] = _getDefaultNotdefGlyph(designSpaceDoc)
 
     otfs = []
     for source in designSpaceDoc.sources:
         otfs.append(
             compileOTF(
                 ufo=source.font,
-                layerName=source.layerName,
-                preProcessorClass=preProcessorClass,
-                outlineCompilerClass=outlineCompilerClass,
-                featureCompilerClass=featureCompilerClass,
-                featureWriters=featureWriters,
-                glyphOrder=glyphOrder,
-                useProductionNames=useProductionNames,
-                optimizeCFF=CFFOptimization.NONE,
-                roundTolerance=roundTolerance,
-                filters=filters,
-                removeOverlaps=False,
-                overlapsBackend=None,
-                inplace=inplace,
-                skipExportGlyphs=skipExportGlyphs,
-                debugFeatureFile=debugFeatureFile,
-                notdefGlyph=notdefGlyph,
-                _tables=SPARSE_OTF_MASTER_TABLES if source.layerName else None,
-                postProcessorClass=postProcessorClass,
+                **{
+                    **kwargs,
+                    **dict(
+                        layerName=source.layerName,
+                        removeOverlaps=False,
+                        overlapsBackend=None,
+                        optimizeCFF=CFFOptimization.NONE,
+                        _tables=SPARSE_OTF_MASTER_TABLES if source.layerName else None,
+                    ),
+                },
             )
         )
 
-    if inplace:
+    if kwargs["inplace"]:
         result = designSpaceDoc
     else:
-        # TODO try a more efficient copy method that doesn't involve (de)serializing
-        result = designSpaceDoc.__class__.fromstring(designSpaceDoc.tostring())
+        result = designSpaceDoc.deepcopyExceptFonts()
 
     for source, otf in zip(result.sources, otfs):
         source.font = otf
@@ -549,9 +478,9 @@ def compileFeatures(
     ufo,
     ttFont=None,
     glyphSet=None,
-    featureWriters=None,
     featureCompilerClass=None,
     debugFeatureFile=None,
+    **kwargs,
 ):
     """Compile OpenType Layout features from `ufo` into FontTools OTL tables.
     If `ttFont` is None, a new TTFont object is created containing the new
@@ -578,9 +507,9 @@ def compileFeatures(
             featureCompilerClass = MtiFeatureCompiler
         else:
             featureCompilerClass = FeatureCompiler
-    featureCompiler = featureCompilerClass(
-        ufo, ttFont, glyphSet=glyphSet, featureWriters=featureWriters
-    )
+
+    kwargs = prune_unknown_kwargs(kwargs, featureCompilerClass)
+    featureCompiler = featureCompilerClass(ufo, ttFont, glyphSet=glyphSet, **kwargs)
     otFont = featureCompiler.compile()
 
     if debugFeatureFile:
@@ -590,25 +519,21 @@ def compileFeatures(
     return otFont
 
 
-def compileVariableTTF(
-    designSpaceDoc,
-    preProcessorClass=TTFInterpolatablePreProcessor,
-    outlineCompilerClass=OutlineTTFCompiler,
-    featureCompilerClass=None,
-    featureWriters=None,
-    glyphOrder=None,
-    useProductionNames=None,
-    cubicConversionError=None,
-    filters=None,
-    reverseDirection=True,
-    excludeVariationTables=(),
-    optimizeGvar=True,
-    flattenComponents=False,
-    inplace=False,
-    debugFeatureFile=None,
-    notdefGlyph=None,
-    postProcessorClass: Optional[Any] = PostProcessor,
-):
+compileVariableTTF_args = {
+    **base_args,
+    **dict(
+        preProcessorClass=TTFInterpolatablePreProcessor,
+        outlineCompilerClass=OutlineTTFCompiler,
+        cubicConversionError=None,
+        reverseDirection=True,
+        flattenComponents=False,
+        excludeVariationTables=(),
+        optimizeGvar=True,
+    ),
+}
+
+
+def compileVariableTTF(designSpaceDoc, **kwargs):
     """Create FontTools TrueType variable font from the DesignSpaceDocument UFO sources
     with interpolatable outlines, using fontTools.varLib.build.
 
@@ -622,57 +547,98 @@ def compileVariableTTF(
 
     Returns a new variable TTFont object.
     """
-    baseUfo = getDefaultMasterFont(designSpaceDoc)
+    kwargs = init_kwargs(kwargs, compileVariableTTF_args)
+    fonts = compileVariableTTFs(designSpaceDoc, **kwargs)
+    if len(fonts) != 1:
+        raise ValueError(
+            "Tried to build a DesignSpace version 5 with multiple variable "
+            "fonts using the old ufo2ft API `compileVariableTTF`. "
+            "Use the new API instead `compileVariableTTFs`"
+        )
+    return next(iter(fonts.values()))
 
-    ttfDesignSpace = compileInterpolatableTTFsFromDS(
-        designSpaceDoc,
-        preProcessorClass=preProcessorClass,
-        outlineCompilerClass=outlineCompilerClass,
-        featureCompilerClass=featureCompilerClass,
-        featureWriters=featureWriters,
-        glyphOrder=glyphOrder,
-        useProductionNames=False,  # will rename glyphs after varfont is built
-        cubicConversionError=cubicConversionError,
-        filters=filters,
-        reverseDirection=reverseDirection,
-        flattenComponents=flattenComponents,
-        inplace=inplace,
-        debugFeatureFile=debugFeatureFile,
-        notdefGlyph=notdefGlyph,
-        # No need to post-process intermediate fonts.
-        postProcessorClass=None,
+
+compileVariableTTFs_args = {
+    **compileVariableTTF_args,
+    **dict(variableFontNames=None),
+}
+
+
+def compileVariableTTFs(designSpaceDoc: DesignSpaceDocument, **kwargs):
+    """Create FontTools TrueType variable fonts for each variable font defined
+    in the given DesignSpaceDocument, using their UFO sources
+    with interpolatable outlines, using fontTools.varLib.build.
+
+    *optimizeGvar*, if set to False, will not perform IUP optimization on the
+      generated 'gvar' table.
+
+    *excludeVariationTables* is a list of sfnt table tags (str) that is passed on
+      to fontTools.varLib.build, to skip building some variation tables.
+
+    *variableFontNames* is an optional list of names of variable fonts
+      to build. If not provided, all variable fonts listed in the given
+      designspace will by built.
+
+    The rest of the arguments works the same as in the other compile functions.
+
+    Returns a dictionary that maps each variable font filename to a new variable
+    TTFont object. If no variable fonts are defined in the Designspace, returns
+    an empty dictionary.
+
+    .. versionadded:: 2.28.0
+    """
+    kwargs = init_kwargs(kwargs, compileVariableTTFs_args)
+    optimizeGvar = kwargs.pop("optimizeGvar")
+    excludeVariationTables = kwargs.pop("excludeVariationTables")
+    variableFontNames = kwargs.pop("variableFontNames")
+    colrLayerReuse = kwargs.pop("colrLayerReuse")
+
+    # Pop inplace because we'll make a copy at this level so deeper functions
+    # don't need to worry
+    inplace = kwargs.pop("inplace")
+    if not inplace:
+        designSpaceDoc = designSpaceDoc.deepcopyExceptFonts()
+
+    vfNameToBaseUfo = _compileNeededSources(
+        kwargs, designSpaceDoc, variableFontNames, compileInterpolatableTTFsFromDS
     )
 
-    logger.info("Building variable TTF font")
+    if not vfNameToBaseUfo:
+        return {}
 
-    varfont = varLib.build(
-        ttfDesignSpace, exclude=excludeVariationTables, optimize=optimizeGvar
-    )[0]
+    logger.info("Building variable TTF fonts: %s", ", ".join(vfNameToBaseUfo))
 
-    if postProcessorClass is not None:
-        postProcessor = postProcessorClass(varfont, baseUfo)
-        varfont = postProcessor.process(useProductionNames)
+    with timer("merge fonts to variable"):
+        vfNameToTTFont = varLib.build_many(
+            designSpaceDoc,
+            exclude=excludeVariationTables,
+            optimize=optimizeGvar,
+            skip_vf=lambda vf_name: variableFontNames
+            and vf_name not in variableFontNames,
+            colr_layer_reuse=colrLayerReuse,
+        )
 
-    return varfont
+    for vfName, varfont in list(vfNameToTTFont.items()):
+        vfNameToTTFont[vfName] = call_postprocessor(
+            varfont, vfNameToBaseUfo[vfName], glyphSet=None, **kwargs
+        )
+
+    return vfNameToTTFont
 
 
-def compileVariableCFF2(
-    designSpaceDoc,
-    preProcessorClass=OTFPreProcessor,
-    outlineCompilerClass=OutlineOTFCompiler,
-    featureCompilerClass=None,
-    featureWriters=None,
-    glyphOrder=None,
-    useProductionNames=None,
-    roundTolerance=None,
-    filters=None,
-    excludeVariationTables=(),
-    inplace=False,
-    debugFeatureFile=None,
-    optimizeCFF=CFFOptimization.SPECIALIZE,
-    notdefGlyph=None,
-    postProcessorClass: Optional[Any] = PostProcessor,
-):
+compileVariableCFF2_args = {
+    **base_args,
+    **dict(
+        preProcessorClass=OTFPreProcessor,
+        outlineCompilerClass=OutlineOTFCompiler,
+        roundTolerance=None,
+        excludeVariationTables=(),
+        optimizeCFF=CFFOptimization.SPECIALIZE,
+    ),
+}
+
+
+def compileVariableCFF2(designSpaceDoc, **kwargs):
     """Create FontTools CFF2 variable font from the DesignSpaceDocument UFO sources
     with interpolatable outlines, using fontTools.varLib.build.
 
@@ -691,42 +657,156 @@ def compileVariableCFF2(
 
     Returns a new variable TTFont object.
     """
-    baseUfo = getDefaultMasterFont(designSpaceDoc)
+    kwargs = init_kwargs(kwargs, compileVariableCFF2_args)
+    fonts = compileVariableCFF2s(designSpaceDoc, **kwargs)
+    if len(fonts) != 1:
+        raise ValueError(
+            "Tried to build a DesignSpace version 5 with multiple variable "
+            "fonts using the old ufo2ft API `compileVariableCFF2`. "
+            "Use the new API instead `compileVariableCFF2s`"
+        )
+    return next(iter(fonts.values()))
 
-    otfDesignSpace = compileInterpolatableOTFsFromDS(
-        designSpaceDoc,
-        preProcessorClass=preProcessorClass,
-        outlineCompilerClass=outlineCompilerClass,
-        featureCompilerClass=featureCompilerClass,
-        featureWriters=featureWriters,
-        filters=filters,
-        glyphOrder=glyphOrder,
-        useProductionNames=False,  # will rename glyphs after varfont is built
-        roundTolerance=roundTolerance,
-        inplace=inplace,
-        debugFeatureFile=debugFeatureFile,
-        notdefGlyph=notdefGlyph,
-        # No need to post-process intermediate fonts.
-        postProcessorClass=None,
+
+compileVariableCFF2s_args = {
+    **compileVariableCFF2_args,
+    **dict(variableFontNames=None),
+}
+
+
+def compileVariableCFF2s(designSpaceDoc, **kwargs):
+    """Create FontTools CFF2 variable fonts for each variable font defined
+    in the given DesignSpaceDocument, using their UFO sources
+    with interpolatable outlines, using fontTools.varLib.build.
+
+    *excludeVariationTables* is a list of sfnt table tags (str) that is passed on
+      to fontTools.varLib.build, to skip building some variation tables.
+
+    *optimizeCFF* (int) defines whether the CFF charstrings should be
+      specialized and subroutinized. 1 (default) only enables the specialization;
+      2 (default) does both specialization and subroutinization. The value 0 is supposed
+      to disable both optimizations, however it's currently unused, because fontTools
+      has some issues generating a VF with non-specialized CFF2 charstrings:
+      fonttools/fonttools#1979.
+      NOTE: Subroutinization of variable CFF2 requires the "cffsubr" extra requirement.
+
+    *variableFontNames* is an optional list of filenames of variable fonts
+      to build. If not provided, all variable fonts listed in the given
+      designspace will by built.
+
+    The rest of the arguments works the same as in the other compile functions.
+
+    Returns a dictionary that maps each variable font filename to a new variable
+    TTFont object.
+
+    .. versionadded:: 2.28.0
+    """
+    kwargs = init_kwargs(kwargs, compileVariableCFF2s_args)
+    excludeVariationTables = kwargs.pop("excludeVariationTables")
+    optimizeCFF = CFFOptimization(kwargs.pop("optimizeCFF"))
+    variableFontNames = kwargs.pop("variableFontNames")
+    colrLayerReuse = kwargs.pop("colrLayerReuse")
+
+    # Pop inplace because we'll make a copy at this level so deeper functions
+    # don't need to worry
+    inplace = kwargs.pop("inplace")
+    if not inplace:
+        designSpaceDoc = designSpaceDoc.deepcopyExceptFonts()
+
+    vfNameToBaseUfo = _compileNeededSources(
+        kwargs, designSpaceDoc, variableFontNames, compileInterpolatableOTFsFromDS
     )
 
-    logger.info("Building variable CFF2 font")
+    if not vfNameToBaseUfo:
+        logger.warning("No variable fonts to build")
+        return {}
 
-    optimizeCFF = CFFOptimization(optimizeCFF)
+    logger.info(f"Building variable CFF2 fonts: {', '.join(vfNameToBaseUfo)}")
 
-    varfont = varLib.build(
-        otfDesignSpace,
+    vfNameToTTFont = varLib.build_many(
+        designSpaceDoc,
         exclude=excludeVariationTables,
         # NOTE optimize=False won't change anything until this PR is merged
         # https://github.com/fonttools/fonttools/pull/1979
         optimize=optimizeCFF >= CFFOptimization.SPECIALIZE,
-    )[0]
+        skip_vf=lambda vf_name: variableFontNames and vf_name not in variableFontNames,
+        colr_layer_reuse=colrLayerReuse,
+    )
 
-    if postProcessorClass is not None:
-        postProcessor = postProcessorClass(varfont, baseUfo)
-        varfont = postProcessor.process(
-            useProductionNames,
+    for vfName, varfont in list(vfNameToTTFont.items()):
+        vfNameToTTFont[vfName] = call_postprocessor(
+            varfont,
+            vfNameToBaseUfo[vfName],
+            glyphSet=None,
+            **kwargs,
             optimizeCFF=optimizeCFF >= CFFOptimization.SUBROUTINIZE,
         )
 
-    return varfont
+    return vfNameToTTFont
+
+
+def _compileNeededSources(
+    kwargs, designSpaceDoc, variableFontNames, compileInterpolatableFunc
+):
+    # We'll need to map <source> elements to TTFonts, to do so make sure that
+    # each <source> has a name.
+    ensure_all_sources_have_names(designSpaceDoc)
+
+    # Go through VFs to build and gather list of needed sources to compile
+    interpolableSubDocs = [
+        subDoc for _location, subDoc in splitInterpolable(designSpaceDoc)
+    ]
+    vfNameToBaseUfo = {}
+    sourcesToCompile = set()
+    for subDoc in interpolableSubDocs:
+        for vfName, vfDoc in splitVariableFonts(subDoc):
+            if variableFontNames is not None and vfName not in variableFontNames:
+                # This VF is not needed so we don't need to compile its sources
+                continue
+            default_source = vfDoc.findDefault()
+            if default_source is None:
+                raise InvalidDesignSpaceData("No default source.")
+            vfNameToBaseUfo[vfName] = default_source.font
+            for source in vfDoc.sources:
+                sourcesToCompile.add(source.name)
+
+    # Match sources to compile to their Descriptor in the original designspace
+    sourcesByName = {}
+    for source in designSpaceDoc.sources:
+        if source.name in sourcesToCompile:
+            sourcesByName[source.name] = source
+
+    # Compile all needed sources in each interpolable subspace to make sure
+    # they're all compatible; that also ensures that sub-vfs within the same
+    # interpolable sub-space are compatible too.
+    for subDoc in interpolableSubDocs:
+        # Only keep the sources that we've identified earlier as need-to-compile
+        subDoc.sources = [s for s in subDoc.sources if s.name in sourcesToCompile]
+        if not subDoc.sources:
+            continue
+
+        # FIXME: Hack until we get a fontTools config module. Disable GPOS
+        # compaction while building masters because the compaction will be undone
+        # anyway by varLib merge and then done again on the VF
+        gpos_compact_value = os.environ.pop(GPOS_COMPACT_MODE_ENV_KEY, None)
+        try:
+            ttfDesignSpace = compileInterpolatableFunc(
+                subDoc,
+                **{
+                    **kwargs,
+                    **dict(
+                        useProductionNames=False,  # will rename glyphs after varfont is built
+                        # No need to post-process intermediate fonts.
+                        postProcessorClass=None,
+                    ),
+                },
+            )
+        finally:
+            if gpos_compact_value is not None:
+                os.environ[GPOS_COMPACT_MODE_ENV_KEY] = gpos_compact_value
+
+        # Stick TTFs back into original big DS
+        for ttfSource in ttfDesignSpace.sources:
+            sourcesByName[ttfSource.name].font = ttfSource.font
+
+    return vfNameToBaseUfo

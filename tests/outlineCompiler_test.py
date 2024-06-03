@@ -847,6 +847,40 @@ class ColrCpalTest:
         }
         assert layers == {"a": [("a.color1", 0), ("a.color2", 1)]}
 
+    def test_colr_cpal_otf(self, FontClass):
+        testufo = FontClass(getpath("ColorTest.ufo"))
+        assert "com.github.googlei18n.ufo2ft.colorLayerMapping" in testufo.lib
+        assert "com.github.googlei18n.ufo2ft.colorPalettes" in testufo.lib
+        result = compileOTF(testufo)
+        assert "COLR" in result
+        assert "CPAL" in result
+        layers = {
+            gn: [(layer.name, layer.colorID) for layer in layers]
+            for gn, layers in result["COLR"].ColorLayers.items()
+        }
+        assert layers == {
+            "a": [("a.color1", 0), ("a.color2", 1)],
+            "b": [("b.color1", 1), ("b.color2", 0)],
+            "c": [("c.color2", 1), ("c.color1", 0)],
+        }
+
+    def test_colr_cpal_interpolatable_ttf(self, FontClass):
+        testufo = FontClass(getpath("ColorTest.ufo"))
+        assert "com.github.googlei18n.ufo2ft.colorLayerMapping" in testufo.lib
+        assert "com.github.googlei18n.ufo2ft.colorPalettes" in testufo.lib
+        result = list(compileInterpolatableTTFs([testufo]))[0]
+        assert "COLR" in result
+        assert "CPAL" in result
+        layers = {
+            gn: [(layer.name, layer.colorID) for layer in layers]
+            for gn, layers in result["COLR"].ColorLayers.items()
+        }
+        assert layers == {
+            "a": [("a.color1", 0), ("a.color2", 1)],
+            "b": [("b.color1", 1), ("b.color2", 0)],
+            "c": [("c.color2", 1), ("c.color1", 0)],
+        }
+
 
 class CmapTest:
     def test_cmap_BMP(self, testufo):
@@ -1096,6 +1130,33 @@ def test_compile_empty_ufo(FontClass):
     assert font["OS/2"].sCapHeight == 700
     assert font["OS/2"].sxHeight == 500
     assert font["OS/2"].sTypoDescender == -200
+
+
+def test_pass_on_conversion_error(FontClass):
+    ufo = FontClass()
+    ufo.info.unitsPerEm = 2000
+
+    # Draw quarter circle
+    glyph = ufo.newGlyph("test")
+    pen = glyph.getPointPen()
+    pen.beginPath()
+    pen.addPoint((0, 43), segmentType="line")
+    pen.addPoint((25, 43))
+    pen.addPoint((43, 25))
+    pen.addPoint((43, 0), segmentType="curve")
+    pen.addPoint((0, 0), segmentType="line")
+    pen.endPath()
+
+    font1 = compileTTF(ufo)  # Default error: 0.001
+    font2 = compileTTF(ufo, cubicConversionError=0.0005)
+
+    # One off-curve:
+    font1_coords = list(font1["glyf"]["test"].coordinates)
+    assert font1_coords == [(0, 43), (0, 0), (43, 0), (43, 43)]
+
+    # Two off-curves:
+    font2_coords = list(font2["glyf"]["test"].coordinates)
+    assert font2_coords == [(0, 43), (0, 0), (43, 0), (43, 19), (19, 43)]
 
 
 if __name__ == "__main__":

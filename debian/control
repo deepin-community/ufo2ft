@@ -11,14 +11,14 @@ Build-Depends: debhelper-compat (= 13),
                python3-setuptools,
                python3-setuptools-scm,
                python3-pytest <!nocheck>,
-               python3-fonttools (>= 4.26.1),
-               python3-ufolib2 (>= 0.7.1),
-               python3-defcon (>= 0.8.1),
+               python3-fonttools (>= 4.38.0),
+               python3-ufolib2 (>= 0.13.1),
+               python3-defcon (>= 0.10.0),
                python3-compreffor (>= 0.5.1),
                python3-booleanoperations (>= 0.9.0),
-               python3-cffsubr (>= 0.2.8),
-Standards-Version: 4.6.0
-Homepage: https://github.com/googlei18n/ufo2ft/releases
+               python3-cffsubr (>= 0.2.9),
+Standards-Version: 4.6.2
+Homepage: https://github.com/googlei18n/ufo2ft/
 Vcs-Git: https://salsa.debian.org/fonts-team/ufo2ft.git
 Vcs-Browser: https://salsa.debian.org/fonts-team/ufo2ft
 Testsuite: autopkgtest-pkg-python
