@@ -824,6 +824,95 @@ class MarkFeatureWriterTest(FeatureWriterTest):
             """  # noqa: B950
         )
 
+    def test_shared_script_char(self, FontClass):
+        ufo = FontClass()
+        ufo.info.unitsPerEm = 1000
+
+        dottedCircle = ufo.newGlyph("kashida-ar")
+        dottedCircle.unicode = 0x0640
+        dottedCircle.anchors = [
+            {"name": "top", "x": 100, "y": 100},
+            {"name": "bottom", "x": 100, "y": -100},
+        ]
+
+        nukta = ufo.newGlyph("fatha-ar")
+        nukta.unicode = 0x064E
+        nukta.appendAnchor({"name": "_top", "x": 0, "y": 0})
+
+        nukta = ufo.newGlyph("kasra-ar")
+        nukta.unicode = 0x0650
+        nukta.appendAnchor({"name": "_bottom", "x": 0, "y": 547})
+
+        ufo.features.text = dedent(
+            """\
+            languagesystem DFLT dflt;
+            languagesystem arab dflt;
+            """
+        )
+        generated = self.writeFeatures(ufo)
+
+        assert str(generated) == dedent(
+            """\
+            markClass kasra-ar <anchor 0 547> @MC_bottom;
+            markClass fatha-ar <anchor 0 0> @MC_top;
+
+            feature mark {
+                lookup mark2base {
+                    pos base kashida-ar
+                        <anchor 100 -100> mark @MC_bottom
+                        <anchor 100 100> mark @MC_top;
+                } mark2base;
+
+            } mark;
+            """  # noqa: B950
+        )
+
+        expected = dedent(
+            """\
+            markClass kasra-ar <anchor 0 547> @MC_bottom;
+            markClass fatha-ar <anchor 0 0> @MC_top;
+
+            feature abvm {
+                lookup abvm_mark2base {
+                    pos base kashida-ar
+                        <anchor 100 100> mark @MC_top;
+                } abvm_mark2base;
+
+            } abvm;
+
+            feature blwm {
+                lookup blwm_mark2base {
+                    pos base kashida-ar
+                        <anchor 100 -100> mark @MC_bottom;
+                } blwm_mark2base;
+
+            } blwm;
+
+            feature mark {
+                lookup mark2base {
+                    pos base kashida-ar
+                        <anchor 100 -100> mark @MC_bottom
+                        <anchor 100 100> mark @MC_top;
+                } mark2base;
+
+            } mark;
+            """  # noqa: B950
+        )
+
+        ufo.features.text = ""
+        generated = self.writeFeatures(ufo)
+        assert str(generated) == expected
+
+        ufo.features.text = dedent(
+            """\
+            languagesystem DFLT dflt;
+            languagesystem arab dflt;
+            languagesystem adlm dflt;
+            """
+        )
+        generated = self.writeFeatures(ufo)
+        assert str(generated) == expected
+
     def test_all_features(self, testufo):
         ufo = testufo
         ufo.info.unitsPerEm = 1000
@@ -889,6 +978,12 @@ class MarkFeatureWriterTest(FeatureWriterTest):
             "foo_bar_baz",
             "bar_foo",
         ]
+        ufo.features.text = dedent(
+            """\
+            languagesystem DFLT dflt;
+            languagesystem taml dflt;
+            """
+        )
         generated = self.writeFeatures(testufo)
 
         assert str(generated) == dedent(
@@ -907,12 +1002,20 @@ class MarkFeatureWriterTest(FeatureWriterTest):
                         ligComponent
                             <anchor NULL>
                         ligComponent
+                            <anchor 1100 499> mark @MC_bar
                             <anchor 1000 500> mark @MC_top;
                     pos ligature bar_foo
                             <anchor NULL>
                         ligComponent
                             <anchor 600 501> mark @MC_top;
                 } abvm_mark2liga;
+
+                lookup abvm_mark2mark_bar {
+                    @MFS_abvm_mark2mark_bar = [barcomb];
+                    lookupflag UseMarkFilteringSet @MFS_abvm_mark2mark_bar;
+                    pos mark barcomb
+                        <anchor 100 440> mark @MC_bar;
+                } abvm_mark2mark_bar;
 
                 lookup abvm_mark2mark_top {
                     @MFS_abvm_mark2mark_top = [foocomb];
@@ -930,15 +1033,8 @@ class MarkFeatureWriterTest(FeatureWriterTest):
                         ligComponent
                             <anchor NULL>
                         ligComponent
-                            <anchor 1100 499> mark @MC_bar;
+                            <anchor NULL>;
                 } blwm_mark2liga;
-
-                lookup blwm_mark2mark_bar {
-                    @MFS_blwm_mark2mark_bar = [barcomb];
-                    lookupflag UseMarkFilteringSet @MFS_blwm_mark2mark_bar;
-                    pos mark barcomb
-                        <anchor 100 440> mark @MC_bar;
-                } blwm_mark2mark_bar;
 
                 lookup blwm_mark2mark_bottom {
                     @MFS_blwm_mark2mark_bottom = [bazcomb];

@@ -178,6 +178,37 @@ class KernFeatureWriterTest(FeatureWriterTest):
             """
         )
 
+    def test_mark_to_base_only(self, FontClass):
+        font = FontClass()
+        for name in ("A", "B", "C"):
+            font.newGlyph(name)
+        font.newGlyph("acutecomb").unicode = 0x0301
+        font.kerning.update({("A", "acutecomb"): -55.0})
+
+        font.features.text = dedent(
+            """\
+            @Bases = [A B C];
+            @Marks = [acutecomb];
+            table GDEF {
+                GlyphClassDef @Bases, [], @Marks, ;
+            } GDEF;
+            """
+        )
+
+        # default is ignoreMarks=True
+        feaFile = self.writeFeatures(font)
+        assert str(feaFile) == dedent(
+            """
+            lookup kern_ltr_marks {
+                pos A acutecomb -55;
+            } kern_ltr_marks;
+
+            feature kern {
+                lookup kern_ltr_marks;
+            } kern;
+            """
+        )
+
     def test_mode(self, FontClass):
         ufo = FontClass()
         for name in ("one", "four", "six", "seven"):
@@ -468,6 +499,7 @@ class KernFeatureWriterTest(FeatureWriterTest):
             languagesystem arab URD;
             languagesystem deva dflt;
             languagesystem dev2 dflt;
+            languagesystem math dflt;
             """
         )
 
@@ -476,7 +508,10 @@ class KernFeatureWriterTest(FeatureWriterTest):
         scriptGroups = KernFeatureWriter._groupScriptsByTagAndDirection(scripts)
 
         assert "kern" in scriptGroups
-        assert list(scriptGroups["kern"]["LTR"]) == [("latn", ["dflt", "TRK "])]
+        assert list(scriptGroups["kern"]["LTR"]) == [
+            ("latn", ["dflt", "TRK "]),
+            ("math", ["dflt"]),
+        ]
         assert list(scriptGroups["kern"]["RTL"]) == [("arab", ["dflt", "URD "])]
 
         assert "dist" in scriptGroups

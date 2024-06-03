@@ -9,6 +9,9 @@ Subject: Add files to avoid clean target failure
  create mode 100644 .eggs/README.txt
  create mode 100644 .pybuild/cpython3_3.9_ufo2ft/.pydistutils.cfg
 
+diff --git a/.eggs/README.txt b/.eggs/README.txt
+new file mode 100644
+index 0000000..5d01668
 --- /dev/null
 +++ b/.eggs/README.txt
 @@ -0,0 +1,6 @@
@@ -18,6 +21,9 @@ Subject: Add files to avoid clean target failure
 +
 +However, it is safe to delete this directory.
 +
+diff --git a/.pybuild/cpython3_3.9_ufo2ft/.pydistutils.cfg b/.pybuild/cpython3_3.9_ufo2ft/.pydistutils.cfg
+new file mode 100644
+index 0000000..ca8ba03
 --- /dev/null
 +++ b/.pybuild/cpython3_3.9_ufo2ft/.pydistutils.cfg
 @@ -0,0 +1,10 @@

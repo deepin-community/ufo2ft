@@ -8,12 +8,15 @@ Forwarded: not-needed
 This will disable tests that requires skia-pathops, since skia is not in
 Debian yet.
 ---
- tests/integration_test.py | 2 ++
- 1 file changed, 2 insertions(+)
+ tests/integration_test.py  | 2 ++
+ tests/preProcessor_test.py | 2 ++
+ 2 files changed, 4 insertions(+)
 
+diff --git a/tests/integration_test.py b/tests/integration_test.py
+index 214480d..fcc6fc3 100644
 --- a/tests/integration_test.py
 +++ b/tests/integration_test.py
-@@ -109,6 +109,7 @@
+@@ -123,6 +123,7 @@ class IntegrationTest:
          otf = compileOTF(testufo, removeOverlaps=True)
          expectTTX(otf, "TestFont-NoOverlaps-CFF.ttx")
  
@@ -21,7 +24,7 @@ Debian yet.
      def test_removeOverlaps_CFF_pathops(self, testufo):
          otf = compileOTF(testufo, removeOverlaps=True, overlapsBackend="pathops")
          expectTTX(otf, "TestFont-NoOverlaps-CFF-pathops.ttx")
-@@ -117,6 +118,7 @@
+@@ -131,6 +132,7 @@ class IntegrationTest:
          ttf = compileTTF(testufo, removeOverlaps=True)
          expectTTX(ttf, "TestFont-NoOverlaps-TTF.ttx")
  
@@ -29,9 +32,11 @@ Debian yet.
      def test_removeOverlaps_pathops(self, testufo):
          ttf = compileTTF(testufo, removeOverlaps=True, overlapsBackend="pathops")
          expectTTX(ttf, "TestFont-NoOverlaps-TTF-pathops.ttx")
+diff --git a/tests/preProcessor_test.py b/tests/preProcessor_test.py
+index 11196f8..6cbf018 100644
 --- a/tests/preProcessor_test.py
 +++ b/tests/preProcessor_test.py
-@@ -91,6 +91,7 @@
+@@ -91,6 +91,7 @@ class TTFPreProcessorTest:
          assert (glyphSets0["a"][0][0].x - glyphSets1["a"][0][0].x) == -40
          assert (glyphSets1["a"][0][0].y - glyphSets0["a"][0][0].y) == 10
  
@@ -39,7 +44,7 @@ Debian yet.
      def test_custom_filters_as_argument(self, FontClass):
          from ufo2ft.filters import RemoveOverlapsFilter, TransformationsFilter
  
-@@ -181,6 +182,7 @@
+@@ -196,6 +197,7 @@ class TTFInterpolatablePreProcessorTest:
          assert (glyphSets[0]["a"][0][0].x - glyphSets[1]["a"][0][0].x) == -40
          assert (glyphSets[1]["a"][0][0].y - glyphSets[0]["a"][0][0].y) == 10
  

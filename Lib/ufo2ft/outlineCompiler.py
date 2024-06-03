@@ -16,10 +16,12 @@ from fontTools.cffLib import (
 from fontTools.misc.arrayTools import unionRect
 from fontTools.misc.fixedTools import otRound
 from fontTools.pens.boundsPen import ControlBoundsPen
+from fontTools.pens.pointPen import SegmentToPointPen
 from fontTools.pens.reverseContourPen import ReverseContourPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.ttGlyphPen import TTGlyphPointPen
 from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.standardGlyphOrder import standardGlyphOrder
 from fontTools.ttLib.tables._g_l_y_f import USE_MY_METRICS, Glyph
 from fontTools.ttLib.tables._h_e_a_d import mac_epoch_diff
 from fontTools.ttLib.tables.O_S_2f_2 import Panose
@@ -99,6 +101,7 @@ class BaseOutlineCompiler:
         glyphOrder=None,
         tables=None,
         notdefGlyph=None,
+        colrLayerReuse=True,
     ):
         self.ufo = font
         # use the previously filtered glyphSet, if any
@@ -114,6 +117,7 @@ class BaseOutlineCompiler:
         self.unicodeToGlyphNameMapping = self.makeUnicodeToGlyphNameMapping()
         if tables is not None:
             self.tables = tables
+        self.colrLayerReuse = colrLayerReuse
         # cached values defined later on
         self._glyphBoundingBoxes = None
         self._fontBoundingBox = None
@@ -784,7 +788,7 @@ class BaseOutlineCompiler:
         secondSideBearings = []  # right in hhea, bottom in vhea
         extents = []
         if mtxTable is not None:
-            for glyphName in self.allGlyphs:
+            for glyphName in self.glyphOrder:
                 advance, firstSideBearing = mtxTable[glyphName]
                 advances.append(advance)
                 bounds = self.glyphBoundingBoxes[glyphName]
@@ -833,10 +837,18 @@ class BaseOutlineCompiler:
         for i in reserved:
             setattr(table, "reserved%i" % i, 0)
         table.metricDataFormat = 0
-        # glyph count
-        setattr(
-            table, "numberOf%sMetrics" % ("H" if isHhea else "V"), len(self.allGlyphs)
-        )
+        # precompute the number of long{Hor,Ver}Metric records in 'hmtx' table
+        # so we don't need to compile the latter to get this updated
+        numLongMetrics = len(advances)
+        if numLongMetrics > 1:
+            lastAdvance = advances[-1]
+            while advances[numLongMetrics - 2] == lastAdvance:
+                numLongMetrics -= 1
+                if numLongMetrics <= 1:
+                    # all advances are equal
+                    numLongMetrics = 1
+                    break
+        setattr(table, "numberOf%sMetrics" % ("H" if isHhea else "V"), numLongMetrics)
 
     def setupTable_hhea(self):
         """
@@ -971,6 +983,7 @@ class BaseOutlineCompiler:
                 layerInfo,
                 glyphMap=glyphMap,
                 clipBoxes=clipBoxes,
+                allowLayerReuse=self.colrLayerReuse,
             )
 
     def setupTable_CPAL(self):
@@ -1452,7 +1465,10 @@ class OutlineTTFCompiler(BaseOutlineCompiler):
 
         post = self.otf["post"]
         post.formatType = 2.0
-        post.extraNames = []
+        # if we set extraNames = [], it will be automatically computed upon compile as
+        # we do below; if we do it upfront we can skip reloading in postProcessor.
+        post.extraNames = [g for g in self.glyphOrder if g not in standardGlyphOrder]
+
         post.mapping = {}
         post.glyphOrder = self.glyphOrder
 
@@ -1478,6 +1494,10 @@ class OutlineTTFCompiler(BaseOutlineCompiler):
             if ttGlyph.isComposite() and hmtx is not None and self.autoUseMyMetrics:
                 self.autoUseMyMetrics(ttGlyph, name, hmtx)
             glyf[name] = ttGlyph
+
+        # update various maxp fields based on glyf without needing to compile the font
+        if "maxp" in self.otf:
+            self.otf["maxp"].recalc(self.otf)
 
     @staticmethod
     def autoUseMyMetrics(ttGlyph, glyphName, hmtx):
@@ -1535,6 +1555,7 @@ class StubGlyph:
             self.unicode = None
         if name == ".notdef":
             self.draw = self._drawDefaultNotdef
+            self.drawPoints = self._drawDefaultNotdefPoints
         self.reverseContour = reverseContour
 
     def __len__(self):
@@ -1581,6 +1602,10 @@ class StubGlyph:
         pen.lineTo((xMax, yMin))
         pen.lineTo((xMin, yMin))
         pen.closePath()
+
+    def _drawDefaultNotdefPoints(self, pen):
+        adapterPen = SegmentToPointPen(pen, guessSmooth=False)
+        self.draw(adapterPen)
 
     def _get_controlPointBounds(self):
         pen = ControlBoundsPen(None)

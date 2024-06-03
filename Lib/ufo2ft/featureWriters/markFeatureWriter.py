@@ -4,9 +4,10 @@ from collections import OrderedDict, defaultdict
 from functools import partial
 
 from fontTools.misc.fixedTools import otRound
+from fontTools.unicodedata import script_extension
 
+from ufo2ft.constants import INDIC_SCRIPTS, USE_SCRIPTS
 from ufo2ft.featureWriters import BaseFeatureWriter, ast
-from ufo2ft.fontInfoData import getAttrWithFallback
 from ufo2ft.util import classifyGlyphs, quantize, unicodeInScripts
 
 
@@ -201,15 +202,15 @@ def colorGraph(adjacency):
     """
     # Basic implementation
     # https://en.wikipedia.org/wiki/Greedy_coloring
-    color = dict()
+    colors = dict()
     # Sorted for reproducibility, probably not the optimal vertex order
     for node in sorted(adjacency):
         usedNeighbourColors = {
-            color[neighbour] for neighbour in adjacency[node] if neighbour in color
+            colors[neighbour] for neighbour in adjacency[node] if neighbour in colors
         }
-        color[node] = firstAvailable(usedNeighbourColors)
+        colors[node] = firstAvailable(usedNeighbourColors)
     groups = defaultdict(list)
-    for node, color in color.items():
+    for node, color in colors.items():
         groups[color].append(node)
     return list(groups.values())
 
@@ -250,14 +251,15 @@ class MarkFeatureWriter(BaseFeatureWriter):
     statement.
 
     If the glyph set contains glyphs whose unicode codepoint's script extension
-    property intersects with one of the "Indic" script codes defined below,
-    then the "abvm" and "blwm" features are also generated for those glyphs,
-    as well as for alternate glyphs only accessible via GSUB substitutions.
+    property intersects with one of the scripts which are processed by the Indic,
+    USE, or Khmer complex shapers, then the "abvm" and "blwm" features are also
+    generated for those glyphs, as well as for alternate glyphs only accessible
+    via GSUB substitutions.
 
     The "abvm" (above-base marks) and "blwm" (below-base marks) features
-    include all mark2base, mark2liga and mark2mark attachments for Indic glyphs
-    containing anchors from predefined lists of "above" and "below" anchor
-    names (see below). If Indic glyphs contain anchors with names not in those
+    include all mark2base, mark2liga and mark2mark attachments for Indic/USE/Khmer
+    glyphs containing anchors from predefined lists of "above" and "below" anchor
+    names (see below). If these glyphs contain anchors with names not in those
     lists, the anchors' vertical position relative to the half of the UPEM
     square is used to decide whether they are considered above or below.
 
@@ -276,23 +278,18 @@ class MarkFeatureWriter(BaseFeatureWriter):
     # @MC_top, @MC_bottom, etc.
     markClassPrefix = "MC"
 
-    # The anchor names and list of scripts for which 'abvm' and 'blwm'
-    # features are generated is the same as the one Glyphs.app uses, see:
-    # https://github.com/googlei18n/ufo2ft/issues/179
-    abvmAnchorNames = {"top", "topleft", "topright", "candra", "bindu", "candrabindu"}
-    blwmAnchorNames = {"bottom", "bottomleft", "bottomright", "nukta"}
-    indicScripts = {
-        "Beng",  # Bengali
-        "Cham",  # Cham
-        "Deva",  # Devanagari
-        "Gujr",  # Gujarati
-        "Guru",  # Gurmukhi
-        "Knda",  # Kannada
-        "Mlym",  # Malayalam
-        "Orya",  # Oriya
-        "Taml",  # Tamil
-        "Telu",  # Telugu
+    abvmAnchorNames = {
+        "top",
+        "topleft",
+        "topright",
+        "candra",
+        "bindu",
+        "candrabindu",
+        "imatra",
     }
+    blwmAnchorNames = {"bottom", "bottomleft", "bottomright", "nukta"}
+
+    scriptsUsingAbvm = set(INDIC_SCRIPTS + USE_SCRIPTS + ["Khmr"])
 
     # Glyphs moves "_bottom" and "_top" (if present) to the top of
     # the list and then picks the first to use in the mark feature.
@@ -304,6 +301,7 @@ class MarkFeatureWriter(BaseFeatureWriter):
         ctx.gdefClasses = self.getGDEFGlyphClasses()
         ctx.anchorLists = self._getAnchorLists()
         ctx.anchorPairs = self._getAnchorPairs()
+        ctx.feaScripts = set(ast.getScriptLanguageSystems(feaFile).keys())
 
     def shouldContinue(self):
         if not self.context.anchorPairs:
@@ -563,7 +561,7 @@ class MarkFeatureWriter(BaseFeatureWriter):
                 # We keep the NamedAnchor if the markClass is allowed in the
                 # current lookup.
                 def include(anchor):
-                    return anchor.markClass.name in markClasses
+                    return anchor.markClass.name in markClasses  # noqa: B023
 
                 filteredAttachment = attachment.filter(include)
                 if filteredAttachment:
@@ -744,20 +742,20 @@ class MarkFeatureWriter(BaseFeatureWriter):
 
         return feature if feature.statements else None
 
-    def _getVerticalThreshold(self):
-        # anchors with unknown names whose Y coordinate is greater or equal to
-        # the line that cuts the UPEM square in half will be treated as "above
-        # base" marks, those that fall below the threshold as "below base".
-        return getAttrWithFallback(self.context.font.info, "unitsPerEm") // 2
-
     def _isAboveMark(self, anchor):
         if anchor.name in self.abvmAnchorNames:
             return True
-        if anchor.name in self.blwmAnchorNames:
+        if anchor.name in self.blwmAnchorNames or anchor.name.startswith("bottom"):
             return False
-        if anchor.y >= self.context.threshold:
-            return True
-        return False
+        # Glyphs uses (used to use?) a heuristic to guess whether an anchor
+        # should go into abvm or blwm. (See
+        # https://github.com/googlefonts/ufo2ft/issues/179#issuecomment-390391382)
+        # However, this causes issues in variable fonts where an anchor in one
+        # master is assigned to a different feature from the same anchor in
+        # another master if the Y-coordinates happen to straddle the threshold
+        # coordinate. For simplicity, we just place all unknown anchors into
+        # the abvm feature.
+        return True
 
     def _isBelowMark(self, anchor):
         return not self._isAboveMark(anchor)
@@ -826,50 +824,73 @@ class MarkFeatureWriter(BaseFeatureWriter):
         )
         ctx.markToMarkAttachments = self._makeMarkToMarkAttachments()
 
-        indicGlyphs = self._getIndicGlyphs()
+        abvmGlyphs, notAbvmGlyphs = self._getAbvmGlyphs()
 
-        def isIndic(glyphName):
-            return glyphName in indicGlyphs
+        def isAbvm(glyphName):
+            return glyphName in abvmGlyphs
 
-        def isNotIndic(glyphName):
-            return glyphName not in indicGlyphs
+        def isNotAbvm(glyphName):
+            return glyphName in notAbvmGlyphs
 
         features = {}
         todo = ctx.todo
         if "mark" in todo:
-            mark = self._makeMarkFeature(include=isNotIndic)
+            mark = self._makeMarkFeature(include=isNotAbvm)
             if mark is not None:
                 features["mark"] = mark
         if "mkmk" in todo:
-            mkmk = self._makeMkmkFeature(include=isNotIndic)
+            mkmk = self._makeMkmkFeature(include=isNotAbvm)
             if mkmk is not None:
                 features["mkmk"] = mkmk
         if "abvm" in todo or "blwm" in todo:
-            if indicGlyphs:
-                self.context.threshold = self._getVerticalThreshold()
+            if abvmGlyphs:
                 for tag in ("abvm", "blwm"):
                     if tag not in todo:
                         continue
-                    feature = self._makeAbvmOrBlwmFeature(tag, include=isIndic)
+                    feature = self._makeAbvmOrBlwmFeature(tag, include=isAbvm)
                     if feature is not None:
                         features[tag] = feature
 
         return features
 
-    def _getIndicGlyphs(self):
-        cmap = self.makeUnicodeToGlyphNameMapping()
-        unicodeIsIndic = partial(unicodeInScripts, scripts=self.indicScripts)
-        if any(unicodeIsIndic(uv) for uv in cmap):
-            # If there are any characters from Indic scripts in the cmap, we
-            # compile a temporary GSUB table to resolve substitutions and get
-            # the set of all the "Indic" glyphs, including alternate glyphs.
-            gsub = self.compileGSUB()
-            glyphGroups = classifyGlyphs(unicodeIsIndic, cmap, gsub)
-            # the 'glyphGroups' dict is keyed by the return value of the
-            # classifying include, so here 'True' means all the Indic glyphs
-            return glyphGroups.get(True, set())
-        else:
-            return set()
+    def _getAbvmGlyphs(self):
+        glyphSet = set(self.getOrderedGlyphSet().keys())
+        scriptsUsingAbvm = self.scriptsUsingAbvm
+        if self.context.feaScripts:
+            # https://github.com/googlefonts/ufo2ft/issues/579 Some characters
+            # can be used in multiple scripts and some of these scripts might
+            # need an abvm feature and some might not, so we filter-out the
+            # abvm scripts that the font does not intend to support.
+            scriptsUsingAbvm = scriptsUsingAbvm & self.context.feaScripts
+        if scriptsUsingAbvm:
+            cmap = self.makeUnicodeToGlyphNameMapping()
+            unicodeIsAbvm = partial(unicodeInScripts, scripts=scriptsUsingAbvm)
+
+            def unicodeIsNotAbvm(uv):
+                return bool(script_extension(chr(uv)) - self.scriptsUsingAbvm)
+
+            if any(unicodeIsAbvm(uv) for uv in cmap):
+                # If there are any characters from Indic/USE/Khmer scripts in
+                # the cmap, we compile a temporary GSUB table to resolve
+                # substitutions and get the set of all the relevant glyphs,
+                # including alternate glyphs.
+                gsub = self.compileGSUB()
+                glyphGroups = classifyGlyphs(unicodeIsAbvm, cmap, gsub)
+                # the 'glyphGroups' dict is keyed by the return value of the
+                # classifying include, so here 'True' means all the
+                # Indic/USE/Khmer glyphs
+                abvmGlyphs = glyphGroups.get(True, set())
+
+                # If a character can be used in Indic/USE/Khmer scripts as well
+                # as other scripts, we want to return it in both 'abvmGlyphs'
+                # (done above) and 'notAbvmGlyphs' (done below) sets.
+                glyphGroups = classifyGlyphs(unicodeIsNotAbvm, cmap, gsub)
+                notAbvmGlyphs = glyphGroups.get(True, set())
+                # Since cmap might not cover all glyphs, we union with the
+                # glyph set.
+                notAbvmGlyphs |= glyphSet - abvmGlyphs
+                return abvmGlyphs, notAbvmGlyphs
+        return set(), glyphSet
 
     def _write(self):
         self._pruneUnusedAnchors()

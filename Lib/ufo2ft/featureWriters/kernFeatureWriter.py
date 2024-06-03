@@ -2,8 +2,9 @@ from types import SimpleNamespace
 
 from fontTools import unicodedata
 
+from ufo2ft.constants import INDIC_SCRIPTS, USE_SCRIPTS
 from ufo2ft.featureWriters import BaseFeatureWriter, ast
-from ufo2ft.util import classifyGlyphs, quantize
+from ufo2ft.util import classifyGlyphs, quantize, unicodeScriptDirection
 
 SIDE1_PREFIX = "public.kern1."
 SIDE2_PREFIX = "public.kern2."
@@ -11,106 +12,11 @@ SIDE2_PREFIX = "public.kern2."
 # In HarfBuzz the 'dist' feature is automatically enabled for these shapers:
 #   src/hb-ot-shape-complex-myanmar.cc
 #   src/hb-ot-shape-complex-use.cc
-#   src/hb-ot-shape-complex-dist.cc
+#   src/hb-ot-shape-complex-indic.cc
 #   src/hb-ot-shape-complex-khmer.cc
 # We derived the list of scripts associated to each dist-enabled shaper from
 # `hb_ot_shape_complex_categorize` in src/hb-ot-shape-complex-private.hh
-DIST_ENABLED_SCRIPTS = {
-    # Indic shaper's scripts
-    # Unicode-1.1 additions
-    "Beng",  # Bengali
-    "Deva",  # Devanagari
-    "Gujr",  # Gujarati
-    "Guru",  # Gurmukhi
-    "Knda",  # Kannada
-    "Mlym",  # Malayalam
-    "Orya",  # Oriya
-    "Taml",  # Tamil
-    "Telu",  # Telugu
-    # Unicode-3.0 additions
-    "Sinh",  # Sinhala
-    # Khmer shaper
-    "Khmr",  # Khmer
-    # Myanmar shaper
-    "Mymr",  # Myanmar
-    # USE shaper's scripts
-    # Unicode-3.2 additions
-    "Buhd",  # Buhid
-    "Hano",  # Hanunoo
-    "Tglg",  # Tagalog
-    "Tagb",  # Tagbanwa
-    # Unicode-4.0 additions
-    "Limb",  # Limbu
-    "Tale",  # Tai Le
-    # Unicode-4.1 additions
-    "Bugi",  # Buginese
-    "Khar",  # Kharoshthi
-    "Sylo",  # Syloti Nagri
-    "Tfng",  # Tifinagh
-    # Unicode-5.0 additions
-    "Bali",  # Balinese
-    # Unicode-5.1 additions
-    "Cham",  # Cham
-    "Kali",  # Kayah Li
-    "Lepc",  # Lepcha
-    "Rjng",  # Rejang
-    "Saur",  # Saurashtra
-    "Sund",  # Sundanese
-    # Unicode-5.2 additions
-    "Egyp",  # Egyptian Hieroglyphs
-    "Java",  # Javanese
-    "Kthi",  # Kaithi
-    "Mtei",  # Meetei Mayek
-    "Lana",  # Tai Tham
-    "Tavt",  # Tai Viet
-    # Unicode-6.0 additions
-    "Batk",  # Batak
-    "Brah",  # Brahmi
-    # Unicode-6.1 additions
-    "Cakm",  # Chakma
-    "Shrd",  # Sharada
-    "Takr",  # Takri
-    # Unicode-7.0 additions
-    "Dupl",  # Duployan
-    "Gran",  # Grantha
-    "Khoj",  # Khojki
-    "Sind",  # Khudawadi
-    "Mahj",  # Mahajani
-    "Modi",  # Modi
-    "Hmng",  # Pahawh Hmong
-    "Sidd",  # Siddham
-    "Tirh",  # Tirhuta
-    # Unicode-8.0 additions
-    "Ahom",  # Ahom
-    "Mult",  # Multani
-    # Unicode-9.0 additions
-    "Bhks",  # Bhaiksuki
-    "Marc",  # Marchen
-    "Newa",  # Newa
-    # Unicode-10.0 additions
-    "Gonm",  # Masaram Gondi
-    "Soyo",  # Soyombo
-    "Zanb",  # Zanabazar Square
-    # Unicode-11.0 additions
-    "Dogr",  # Dogra
-    "Gong",  # Gunjala Gondi
-    "Maka",  # Makasar
-    # Unicode-12.0 additions
-    "Nand",  # Nandinagari
-}
-
-
-# we consider the 'Common' and 'Inherited' scripts as neutral for
-# determining a kerning pair's horizontal direction
-DFLT_SCRIPTS = {"Zyyy", "Zinh"}
-
-
-def unicodeScriptDirection(uv):
-    sc = unicodedata.script(chr(uv))
-    if sc in DFLT_SCRIPTS:
-        return None
-    return unicodedata.script_horizontal_direction(sc)
-
+DIST_ENABLED_SCRIPTS = set(INDIC_SCRIPTS) | set(["Khmr", "Mymr"]) | set(USE_SCRIPTS)
 
 RTL_BIDI_TYPES = {"R", "AL"}
 LTR_BIDI_TYPES = {"L", "AN", "EN"}
@@ -350,7 +256,10 @@ class KernFeatureWriter(BaseFeatureWriter):
         # direction (DFLT is excluded)
         scriptGroups = {}
         for scriptCode, scriptLangSys in feaScripts.items():
-            direction = unicodedata.script_horizontal_direction(scriptCode)
+            if scriptCode:
+                direction = unicodedata.script_horizontal_direction(scriptCode)
+            else:
+                direction = "LTR"
             if scriptCode in DIST_ENABLED_SCRIPTS:
                 tag = "dist"
             else:
@@ -447,7 +356,8 @@ class KernFeatureWriter(BaseFeatureWriter):
                 # If there are pairs with a mix of mark/base then the IgnoreMarks
                 # flag is unnecessary and should not be set
                 basePairs, markPairs = self._splitBaseAndMarkPairs(pairs, marks)
-                self._makeSplitDirectionKernLookups(lookups, basePairs)
+                if basePairs:
+                    self._makeSplitDirectionKernLookups(lookups, basePairs)
                 if markPairs:
                     self._makeSplitDirectionKernLookups(
                         lookups, markPairs, ignoreMarks=False, suffix="_marks"
@@ -460,7 +370,11 @@ class KernFeatureWriter(BaseFeatureWriter):
             pairs = self.context.kerning.pairs
             if self.options.ignoreMarks:
                 basePairs, markPairs = self._splitBaseAndMarkPairs(pairs, marks)
-                lookups["LTR"] = [self._makeKerningLookup("kern_ltr", basePairs)]
+                lookups["LTR"] = []
+                if basePairs:
+                    lookups["LTR"].append(
+                        self._makeKerningLookup("kern_ltr", basePairs)
+                    )
                 if markPairs:
                     lookups["LTR"].append(
                         self._makeKerningLookup(
